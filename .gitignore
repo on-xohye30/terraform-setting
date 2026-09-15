@@ -1,0 +1,27 @@
+# Terraform 로컬 산출물
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# 민감 변수 파일 (실제 값은 절대 커밋 금지)
+*.tfvars
+*.tfvars.json
+!example.tfvars
+
+# plan 출력
+*.tfplan
+tfplan
+
+# 예제 실행 결과물
+examples/01-local-basics/out/
+examples/02-variables-outputs/out/
+
+# 에디터/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
