@@ -1,0 +1,11 @@
+# checkov 전역 설정. 스킵은 반드시 사유를 남기고, 로컬/CI 에서 실제로 실패하는 검사만 등록한다.
+framework:
+  - terraform
+directory:
+  - .
+quiet: true
+compact: true
+skip-path:
+  - .terraform
+skip-check:
+  - CKV_AWS_119   # DynamoDB 잠금 테이블 CMK 암호화: 기본 AWS 관리 키로 암호화됨. CMK 는 KMS 모듈 도입 후 상향 (ADR-002)

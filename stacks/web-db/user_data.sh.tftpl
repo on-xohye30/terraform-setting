@@ -1,0 +1,11 @@
+#!/bin/bash
+# 시크릿 값은 이 스크립트에 들어오지 않는다. 위치(ARN)만 전달하고 인스턴스 역할로 런타임에 조회한다.
+set -euo pipefail
+
+cat > /etc/profile.d/app-env.sh <<EOF
+export APP_DB_SECRET_ARN="${secret_arn}"
+export AWS_DEFAULT_REGION="${region}"
+EOF
+
+# 애플리케이션은 시작 시 다음과 같이 조회한다:
+#   aws secretsmanager get-secret-value --secret-id "$APP_DB_SECRET_ARN" --query SecretString --output text

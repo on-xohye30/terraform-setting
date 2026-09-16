@@ -1,79 +1,129 @@
-# Terraform 구현 학습
+# AWS Secure IaC Baseline
 
-Terraform으로 인프라를 **코드로 선언하고(HCL) → 계획하고(plan) → 적용하고(apply) → 상태로 추적(state)** 하는
-전체 흐름을 직접 구현하며 정리한 학습 저장소입니다. 클라우드 계정 없이도 돌아가는 `local` 프로바이더 예제부터
-시작해서, 변수/출력 → 모듈 → 원격 상태 → IaC 보안 점검까지 단계별로 확장합니다.
+[![ci](https://github.com/on-xohye30/terraform-setting/actions/workflows/ci.yml/badge.svg)](https://github.com/on-xohye30/terraform-setting/actions/workflows/ci.yml)
+![terraform](https://img.shields.io/badge/terraform-%3E%3D1.6-7B42BC?logo=terraform&logoColor=white)
+![aws](https://img.shields.io/badge/provider-aws%20~%3E5.0-FF9900?logo=amazonaws&logoColor=white)
 
-> 보안 분석 업무 관점에서 **"Terraform 코드를 읽고 위험한 설정을 찾아내는 눈"**을 기르는 것도 함께 목표로 합니다.
-> (`docs/06-security.md`, `examples/05-security-scan`)
+Terraform으로 AWS 인프라를 올릴 때 **보안 설정을 사람이 기억해서 넣는 것이 아니라, 모듈 기본값과 파이프라인이 강제하도록** 만든 베이스라인입니다.
+취약점 분석 업무에서 반복적으로 보이는 클라우드 설정 오류(공개 버킷, 전체 개방 보안그룹, 미암호화 스토리지, 하드코딩 시크릿, IMDSv1)를
+코드 레벨에서 발생하지 않게 막는 것이 목표입니다.
 
-## 학습 목표
+## 구성
 
-1. HCL 문법과 Terraform 핵심 블록(`terraform`, `provider`, `resource`, `data`, `variable`, `output`, `locals`, `module`)을 설명할 수 있다.
-2. `init → validate → plan → apply → destroy` 워크플로와 각 단계에서 생기는 파일을 이해한다.
-3. **state**가 무엇이고 왜 민감정보 취급을 해야 하는지, 원격 백엔드 + 잠금(lock)이 왜 필요한지 설명할 수 있다.
-4. 재사용 가능한 모듈을 작성하고 입력/출력 계약을 설계할 수 있다.
-5. tfsec / checkov / trivy 같은 도구로 IaC 설정 오류를 자동 점검하고, 대표 취약 패턴을 식별할 수 있다.
+| 경로 | 역할 | 핵심 보안 결정 |
+|---|---|---|
+| [`modules/s3-secure-bucket`](modules/s3-secure-bucket) | 호출자가 옵션을 주지 않아도 안전한 S3 버킷 모듈 | 퍼블릭 4중 차단, 소유권 강제, 저장 암호화, 버전 관리, TLS 전용 정책, 수명주기 |
+| [`bootstrap`](bootstrap) | 원격 state 저장소(S3) + 잠금 테이블(DynamoDB) 1회 생성 | state 를 시크릿으로 취급: 암호화·버전 관리·퍼블릭 차단·삭제 보호 |
+| [`stacks/web-db`](stacks/web-db) | 웹 인스턴스 + RDS + 백업 버킷으로 구성된 참조 스택 | 최소권한 IAM, SG 참조 기반 접근 제어, Secrets Manager, IMDSv2, 비공개 DB |
+| [`policy`](policy) | plan 결과(JSON)에 대한 OPA/Conftest 정책 | 스캐너가 놓치는 조직 규칙을 코드로 강제 |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | fmt → validate → tfsec → checkov → conftest | 배포 전 차단, 예외는 사유와 함께 코드에 기록 |
+| [`docs`](docs) | 아키텍처와 보안 결정 기록(ADR) | 왜 이렇게 했는지 추적 가능하게 |
 
-## 디렉터리 구조
+## 아키텍처
 
+```mermaid
+flowchart LR
+    subgraph once["1회 부트스트랩"]
+        B[bootstrap] --> S3S[(S3<br/>tfstate)]
+        B --> DDB[(DynamoDB<br/>lock)]
+    end
+
+    subgraph stack["stacks/web-db"]
+        direction TB
+        ALB[/HTTPS 443/] --> EC2[EC2<br/>IMDSv2 · 암호화 EBS<br/>인스턴스 역할]
+        EC2 -- SG 참조 5432 --> RDS[(RDS Postgres<br/>비공개 · 암호화 · 삭제보호)]
+        EC2 -- GetSecretValue --> SM[Secrets Manager]
+        EC2 -- Put/Get --> BK[(backups<br/>s3-secure-bucket)]
+    end
+
+    S3S -. backend .-> stack
+    M[modules/s3-secure-bucket] --> S3S
+    M --> BK
 ```
-terraform-setting/
-├── README.md
-├── docs/                         # 개념 정리 노트
-│   ├── 01-core-concepts.md       # HCL, 블록, 프로바이더, 리소스 그래프
-│   ├── 02-workflow.md            # init/plan/apply/destroy 와 생성 파일
-│   ├── 03-state.md               # 상태 파일, 백엔드, 잠금, import/moved
-│   ├── 04-variables-outputs.md   # 변수 타입/검증/민감값, 출력, locals, 함수
-│   ├── 05-modules.md             # 모듈 설계, 버전 고정, for_each/count
-│   ├── 06-security.md            # IaC 보안 점검 포인트 + 취약 패턴 카탈로그
-│   └── 07-cheatsheet.md          # 명령어/함수 치트시트
-└── examples/
-    ├── 01-local-basics/          # 클라우드 없이 실행: local_file 로 흐름 익히기
-    ├── 02-variables-outputs/     # 변수 검증, sensitive, locals, for 표현식
-    ├── 03-modules/               # 보안 기본값이 적용된 S3 버킷 모듈 (AWS)
-    ├── 04-remote-state/          # S3 + DynamoDB 잠금 백엔드 구성
-    └── 05-security-scan/         # 일부러 취약하게 만든 코드 + 스캐너 실행법
-```
 
-## 빠른 시작 (클라우드 계정 불필요)
+## 보안 설계 원칙
+
+1. **안전한 기본값(secure by default).** 모듈은 옵션을 생략해도 가장 안전한 상태로 생성된다. 위험한 설정은 명시적으로 켜야 하며, 그마저도 `validation` 으로 막는 것이 있다(예: `0.0.0.0/0` 관리 CIDR).
+2. **시크릿은 코드·state·plan 어디에도 평문으로 두지 않는다.** DB 비밀번호는 `random_password` → Secrets Manager 로 생성·보관하고, 인스턴스는 역할로 런타임에 조회한다. 프로바이더 인증은 환경변수/OIDC 로만 받는다.
+3. **네트워크 접근은 CIDR 이 아니라 관계로 정의한다.** DB 보안그룹은 웹 보안그룹을 참조한다. IP 목록 관리가 아니라 "누가 누구에게" 를 코드로 표현한다.
+4. **state 는 시크릿이다.** 원격 백엔드는 암호화·버전 관리·퍼블릭 차단·잠금이 기본이며 `prevent_destroy` 로 보호한다.
+5. **검증은 사람이 아니라 파이프라인이 한다.** 정적 분석 2종(tfsec, checkov) + plan 기반 정책(Conftest) 을 PR 에서 강제한다. 예외는 사유 주석 없이는 허용하지 않는다.
+
+세부 근거는 [docs/security-decisions.md](docs/security-decisions.md) 에 ADR 형식으로 기록했습니다.
+
+## 사용법
+
+### 0. 요구사항
+
+- Terraform >= 1.6, AWS 자격증명(환경변수 또는 프로파일). CI 는 OIDC 를 권장한다.
+- 선택: `tfsec`, `checkov`, `conftest` (로컬에서 CI 와 동일한 검사를 돌릴 때)
+
+### 1. 원격 state 부트스트랩 (계정당 1회)
 
 ```bash
-# Terraform 설치 확인
-terraform -version
-
-cd examples/01-local-basics
-terraform init          # 프로바이더 다운로드, .terraform/ 생성
-terraform validate      # 문법/타입 검증
-terraform plan          # 변경 계획 미리보기 (아무것도 바꾸지 않음)
-terraform apply         # 실제 적용 → terraform.tfstate 생성
-cat out/hello.txt
-
-terraform destroy       # 생성한 리소스 정리
+cd bootstrap
+terraform init
+terraform apply -var state_bucket_name=<org>-tfstate-<env>-<account-suffix>
+terraform output -raw backend_config > ../stacks/web-db/backend.hcl
 ```
 
-## 핵심 요약 (한 장 정리)
+### 2. 스택 배포
 
-| 개념 | 한 줄 요약 |
-|---|---|
-| 선언형 | "어떻게"가 아니라 "최종 상태"를 적으면 Terraform이 차이(diff)를 계산해 맞춘다 |
-| 프로바이더 | AWS/Azure/GCP/local 등 API 플러그인. `required_providers`로 버전 고정 |
-| 리소스 | 관리 대상 객체. `resource "<type>" "<name>"`, 참조는 `type.name.attr` |
-| 상태(state) | 실제 인프라 ↔ 코드 매핑 원장. **평문 민감정보 포함** → 원격 저장 + 암호화 + 접근통제 필수 |
-| plan | 코드·상태·실제를 비교해 `+ 생성 / ~ 변경 / - 삭제 / -/+ 재생성` 계획 출력 |
-| 모듈 | 디렉터리 단위 재사용. 입력(variable)·출력(output)이 계약 |
-| 워크스페이스 | 같은 코드로 dev/stage/prod 상태만 분리 |
-| 보안 점검 | tfsec·checkov·trivy로 공개 버킷, 0.0.0.0/0, 암호화 미적용, 하드코딩 시크릿 탐지 |
+```bash
+cd stacks/web-db
+cp example.tfvars <env>.tfvars      # 값 채우기 (vpc_id, private_subnet_ids, admin_cidrs 등)
+terraform init -backend-config=backend.hcl
+terraform plan -var-file=<env>.tfvars -out=tfplan
+terraform show -json tfplan > tfplan.json
+conftest test tfplan.json -p ../../policy   # 조직 정책 통과 확인
+terraform apply tfplan
+```
 
-## 학습 순서 추천
+### 3. 모듈만 재사용
 
-`docs/01` → `examples/01` → `docs/02`, `docs/03` → `examples/02` → `docs/04` → `docs/05` + `examples/03`
-→ `examples/04` → `docs/06` + `examples/05` → `docs/07`은 수시 참조
+```hcl
+module "logs" {
+  source      = "github.com/on-xohye30/terraform-setting//modules/s3-secure-bucket?ref=v0.1.0"
+  bucket_name = "myorg-prod-logs-1234"
+  kms_key_arn = aws_kms_key.logs.arn   # 생략 시 SSE-S3
+}
+```
 
-## 참고 자료
+## 검증 파이프라인
 
-- Terraform 공식 문서: https://developer.hashicorp.com/terraform/docs
-- Terraform Registry (프로바이더/모듈): https://registry.terraform.io/
-- AWS Provider 문서: https://registry.terraform.io/providers/hashicorp/aws/latest/docs
-- tfsec: https://github.com/aquasecurity/tfsec · checkov: https://www.checkov.io/ · trivy: https://trivy.dev/
-- OpenTofu(오픈소스 포크): https://opentofu.org/
+| 단계 | 도구 | 실패 조건 |
+|---|---|---|
+| 포맷 | `terraform fmt -check -recursive` | 포맷 불일치 |
+| 문법·타입 | `terraform validate` (모듈·bootstrap·스택 각각) | 참조 오류, 타입 불일치, validation 위반 |
+| 정적 분석 | tfsec | HIGH 이상 |
+| 정적 분석 | checkov | 스킵 목록(`.checkov.yaml`) 외 모든 실패 |
+| 정책 | conftest + `policy/*.rego` | `deny` 규칙 위반 (정책 자체는 `conftest verify` 로 단위 테스트) |
+
+### 스캐너 예외 정책
+
+예외는 **해당 줄에 사유를 남기는 것** 만 허용한다. 전역 스킵은 `.checkov.yaml` 에 사유와 함께 기록한다.
+
+```hcl
+#tfsec:ignore:aws-s3-enable-bucket-logging 로그 버킷 자신은 순환 로깅 대상에서 제외
+```
+
+## 디렉터리
+
+```
+.
+├── modules/s3-secure-bucket/     # 재사용 모듈 (versions / variables / main / outputs / README)
+├── bootstrap/                    # 원격 state + 잠금 (로컬 state 로 1회 실행)
+├── stacks/web-db/                # 참조 스택 (backend.hcl 은 커밋하지 않음)
+├── policy/                       # Conftest 정책 + 테스트
+├── docs/                         # architecture.md, security-decisions.md
+├── .github/workflows/ci.yml
+├── .checkov.yaml
+└── .pre-commit-config.yaml
+```
+
+## 로드맵
+
+- [ ] KMS 키 모듈 추가 후 S3·RDS·Secrets Manager 기본 암호화를 CMK 로 상향
+- [ ] VPC 모듈(프라이빗 서브넷, 플로우 로그, 엔드포인트) 추가로 스택 입력 축소
+- [ ] GitHub Actions OIDC 역할 + `plan` 결과 PR 코멘트
+- [ ] Terraform 1.10 `ephemeral` 리소스로 DB 비밀번호가 state 에 남지 않도록 전환

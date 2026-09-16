@@ -1,4 +1,4 @@
-# Terraform 로컬 산출물
+# Terraform 산출물
 .terraform/
 .terraform.lock.hcl
 *.tfstate
@@ -6,19 +6,21 @@
 *.tfstate.backup
 crash.log
 crash.*.log
+*.tfplan
+tfplan
+tfplan.json
 
-# 민감 변수 파일 (실제 값은 절대 커밋 금지)
+# 환경별 설정 — 실제 값은 커밋하지 않는다
 *.tfvars
 *.tfvars.json
 !example.tfvars
+backend.hcl
+!backend.example.hcl
 
-# plan 출력
-*.tfplan
-tfplan
-
-# 예제 실행 결과물
-examples/01-local-basics/out/
-examples/02-variables-outputs/out/
+# 스캐너 리포트
+*.sarif
+tfsec.json
+checkov.json
 
 # 에디터/OS
 .vscode/
