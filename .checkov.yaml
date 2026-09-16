@@ -1,4 +1,5 @@
-# checkov 전역 설정. 스킵은 반드시 사유를 남기고, 로컬/CI 에서 실제로 실패하는 검사만 등록한다.
+# checkov 전역 설정. 스킵은 반드시 사유를 남기고, 실제로 실패하는 검사만 등록한다.
+# (checkov 3.3.x 기준 로컬 실행으로 확인. 새 버전에서 실패가 늘면 사유와 함께 추가하거나 코드를 고친다)
 framework:
   - terraform
 directory:
@@ -8,4 +9,15 @@ compact: true
 skip-path:
   - .terraform
 skip-check:
-  - CKV_AWS_119   # DynamoDB 잠금 테이블 CMK 암호화: 기본 AWS 관리 키로 암호화됨. CMK 는 KMS 모듈 도입 후 상향 (ADR-002)
+  # --- CMK 관련: 기본은 AWS 관리 키, CMK 는 KMS 모듈 도입 후 상향 (ADR-002) ---
+  - CKV_AWS_119   # DynamoDB 잠금 테이블 CMK
+  - CKV_AWS_149   # Secrets Manager 시크릿 CMK
+  - CKV_AWS_354   # RDS Performance Insights CMK
+  # --- S3: 베이스라인 범위 밖 ---
+  - CKV_AWS_144   # 교차 리전 복제: DR 요구사항이 있는 스택에서 별도 리소스로 구성
+  - CKV2_AWS_62   # 이벤트 알림: 소비자가 필요할 때 버킷 외부에서 붙인다
+  # --- RDS: 로드맵 ---
+  - CKV_AWS_118   # 향상된 모니터링: 모니터링 IAM 역할이 필요해 베이스라인에서 제외
+  - CKV2_AWS_30   # 쿼리 로깅 파라미터 그룹: 엔진 버전별 파라미터 그룹은 스택 소비자가 결정
+  # --- Secrets Manager: 로드맵 ---
+  - CKV2_AWS_57   # 자동 회전: 회전 Lambda 는 베이스라인 범위 밖. 회전 시 drift 방지는 ignore_changes 로 준비돼 있음 (ADR-003)

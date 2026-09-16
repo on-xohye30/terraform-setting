@@ -24,7 +24,8 @@ state 가 유출되면 DB 비밀번호, 내부 IP 구조, IAM 구성이 그대�
 **배경.** 모든 버킷·시크릿에 KMS CMK 를 강제하면 키 관리 모듈이 선행돼야 하고, 키 정책 오류가 곧 장애가 된다.
 
 **결정.** 모듈은 저장 암호화를 **항상** 켜되, `kms_key_arn` 이 주어지면 SSE-KMS(+Bucket Key), 없으면 SSE-S3 를 사용한다.
-같은 원칙을 DynamoDB 잠금 테이블(AWS 관리 키)과 Secrets Manager 에도 적용한다. checkov `CKV_AWS_119`(DynamoDB CMK) 는 이 결정을 근거로 스킵한다.
+같은 원칙을 DynamoDB 잠금 테이블, Secrets Manager, RDS Performance Insights 에도 적용한다(AWS 관리 키로 암호화).
+checkov 의 CMK 강제 검사 `CKV_AWS_119`, `CKV_AWS_149`, `CKV_AWS_354` 는 이 결정을 근거로 스킵한다.
 
 **결과.** "암호화 없음" 상태는 생성 자체가 불가능하다. CMK 가 필요한 데이터 등급은 호출자가 한 줄로 상향할 수 있다. KMS 모듈 도입 후 스킵을 제거하는 것이 로드맵 1순위다.
 
